@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hyperscale
+  labels:
+    app.kubernetes.io/name: hyperscale-saas
+    app.kubernetes.io/part-of: b2b-logistics
+

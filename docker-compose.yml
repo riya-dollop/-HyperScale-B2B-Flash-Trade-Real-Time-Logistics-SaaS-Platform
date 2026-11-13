@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------
+  # 1. MongoDB (Primary Document Database)
+  # ----------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: hyperscale_mongodb
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - hyperscale_network
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', 'db.adminCommand("ping")']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # 2. Redis (Sliding Window Rate Limiter, Cache-Aside & Atomic Lock)
+  # ----------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: hyperscale_redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    command: ['redis-server', '--appendonly', 'yes', '--save', '60', '1']
+    volumes:
+      - redis_data:/data
+    networks:
+      - hyperscale_network
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # 3. RabbitMQ (Reliable Inter-Service Message Broker + Management UI)
+  # ----------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: hyperscale_rabbitmq
+    restart: unless-stopped
+    ports:
+      - '5672:5672'    # AMQP Wire Protocol
+      - '15672:15672'  # RabbitMQ Management Web Dashboard
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - hyperscale_network
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # 4. Apache Zookeeper (Kafka Coordination Engine)
+  # ----------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: hyperscale_zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - '2181:2181'
+    networks:
+      - hyperscale_network
+
+  # ----------------------------------------------------------------
+  # 5. Apache Kafka (High-Throughput Analytics & Event Streaming)
+  # ----------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: hyperscale_kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - hyperscale_network
+
+  # ----------------------------------------------------------------
+  # 6. Backend API & Real-Time Engine (Node.js + Express + Socket.io)
+  # ----------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hyperscale_backend
+    restart: unless-stopped
+    ports:
+      - '5000:5000'
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      CLIENT_URL: http://localhost:5173
+      MONGO_URI: mongodb://mongodb:27017/hyperscale_saas
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: hyperscale-saas-core
+      KAFKA_GROUP_ID: hyperscale-analytics-group
+      JWT_ACCESS_SECRET: hyperscale_super_secure_jwt_access_secret_key_2026_xyz
+      JWT_REFRESH_SECRET: hyperscale_super_secure_jwt_refresh_secret_key_2026_abc
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - hyperscale_network
+
+  # ----------------------------------------------------------------
+  # 7. Frontend Client (React Vite + Tailwind + Redux + Nginx)
+  # ----------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hyperscale_frontend
+    restart: unless-stopped
+    ports:
+      - '5173:80'
+    depends_on:
+      - backend
+    networks:
+      - hyperscale_network
+
+networks:
+  hyperscale_network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  redis_data:
+  rabbitmq_data:
+
